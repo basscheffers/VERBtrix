@@ -1,0 +1,61 @@
+#######################################
+# Syntax Coloring Map For VERBtrix
+#######################################
+
+#######################################
+# Datatypes (KEYWORD1)
+#######################################
+
+AudioEffectVintageReverb	KEYWORD1
+VintageReverbCore	KEYWORD1
+Settings	KEYWORD1
+Type	KEYWORD1
+Preset	KEYWORD1
+
+#######################################
+# Methods and Functions (KEYWORD2)
+#######################################
+
+mix	KEYWORD2
+predelay	KEYWORD2
+decay	KEYWORD2
+size	KEYWORD2
+diffusion	KEYWORD2
+modRate	KEYWORD2
+modDepth	KEYWORD2
+bassMult	KEYWORD2
+bassXover	KEYWORD2
+highMult	KEYWORD2
+highXover	KEYWORD2
+lowCut	KEYWORD2
+highCut	KEYWORD2
+freeze	KEYWORD2
+wetGain	KEYWORD2
+bypass	KEYWORD2
+reset	KEYWORD2
+type	KEYWORD2
+preset	KEYWORD2
+apply	KEYWORD2
+settings	KEYWORD2
+typeName	KEYWORD2
+typeDefaults	KEYWORD2
+presetName	KEYWORD2
+presetSettings	KEYWORD2
+presetType	KEYWORD2
+memoryFloats	KEYWORD2
+ready	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+AMBIENCE	LITERAL1
+ROOM	LITERAL1
+CHAMBER	LITERAL1
+PLATE	LITERAL1
+HALL	LITERAL1
+CATHEDRAL	LITERAL1
+ARENA	LITERAL1
+CHORUS_SPACE	LITERAL1
+TYPE_COUNT	LITERAL1
+PRESET_COUNT	LITERAL1

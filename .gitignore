@@ -1,0 +1,9 @@
+# Rendered listening files and harness binaries (regenerate with extras/test/test_reverb.cpp)
+extras/test/out/
+extras/test/test_reverb
+extras/test/param_sweep
+extras/test/ir_dump
+
+# Local tooling
+.claude/settings.local.json
+.DS_Store
