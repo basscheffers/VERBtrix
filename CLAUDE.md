@@ -1,8 +1,10 @@
 # VERBtrix - project notes for Claude
 
-Read this first. It is the handoff from the session that built the project
-(2026-09-08/09). README.md has the user-facing documentation; this file has
-the context, decisions and open items that are not obvious from the code.
+Read this first. It is the handoff between Claude sessions (2026-09-08 build,
+2026-09-09 interpolation fix, 2026-09-17 library packaging). README.md has the
+user-facing documentation; this file has the context, decisions and open items
+that are not obvious from the code. Sessions may run under different accounts,
+so nothing lives in Claude's memory: everything worth knowing is in here.
 
 ## What this is
 
@@ -22,7 +24,21 @@ arduino-cli compile --fqbn teensy:avr:teensy41:usb=serial,speed=600,opt=o2std,ke
 
 The project is laid out as an Arduino 1.5 library (since 2026-09-17) so it can be installed
 into other Teensy projects: `library.properties`, `src/`, `examples/`, `extras/`, `keywords.txt`.
-Git remote: github.com/basscheffers/VERBtrix. Rendered WAVs and harness binaries are ignored.
+Sketches use `#include <VERBtrix.h>`. Only `src/` is compiled by Arduino.
+
+## Git / publishing state
+
+- Remote: `git@github.com:basscheffers/VERBtrix.git`, branch `main`. Identity in this repo is
+  `Bas Scheffers <bas@scheffers.net>` (also the author/maintainer in `library.properties`).
+- As of 2026-09-18 the remote has only GitHub's "Initial commit" (MIT LICENSE). Local `main`
+  has one unpushed commit on top of it with the whole library, plus this CLAUDE.md update.
+  **First step of the next session: `git push -u origin main`** (nothing has been pushed yet).
+- Rendered WAVs (`extras/test/out/`), harness binaries, `.DS_Store` and `.claude/settings.local.json`
+  are git-ignored. The harness regenerates the WAVs in seconds.
+- Not done yet: a `v1.0.0` tag / GitHub release (Arduino Library Manager and the PlatformIO
+  registry key on tags), and the Library Manager submission itself (a PR adding the repo URL to
+  github.com/arduino/library-registry). The library name `VERBtrix` looks unique but was not
+  checked against the registry.
 
 ## Files
 
@@ -102,12 +118,22 @@ expected to need tuning by ear.
 
 ## Where we left off / possible next steps
 
-Last completed (2026-09-09, second session): traced the "RT60 short at size != 1" item to
-interpolation loss and replaced linear/cubic reads in the loop with 6-point Lagrange (see
-Decisions). Harness, README and this file updated. Everything builds. The new build has not been
-flashed or listened to yet; first thing to check on hardware is `reverb.processorUsage()`.
-Before that: renamed the sketch "presets" to `Type` (8 families) and added a `Preset` enum with
-32 named presets, `settings()`/`apply()` for user presets.
+Last completed (2026-09-17/18): restructured into the Arduino library layout, added
+`examples/Minimal`, the Teensy 4.x `#error` guard, `library.properties`, `keywords.txt`,
+`.gitignore`, README installation section. Both examples compile with `--library .`, the harness
+builds from `extras/test`. Committed locally, NOT pushed (see Git state above).
+
+Before that (2026-09-09): traced the "RT60 short at size != 1" item to interpolation loss and
+replaced linear/cubic reads in the loop with 6-point Lagrange (see Decisions). Neither that
+change nor the library layout has been flashed or listened to yet. On hardware, check in order:
+1. It compiles and uploads from the Arduino IDE with the library installed in the sketchbook
+   `libraries/` folder (the compile checks so far used `arduino-cli --library .`).
+2. `reverb.processorUsage()` in the serial output (estimate 10-15 %; was never measured).
+3. That it still "sounds amazing", in particular the treble tail at small sizes, which is what
+   the interpolation change affects.
+
+Before that (2026-09-09, first half): renamed the sketch "presets" to `Type` (8 families) and
+added a `Preset` enum with 32 named presets, `settings()`/`apply()` for user presets.
 
 Ideas the user has not decided on yet:
 - Tune preset values by ear (serial: `N` lists, `n 12` loads, `t 3` loads a type).
