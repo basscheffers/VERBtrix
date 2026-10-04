@@ -38,6 +38,19 @@
 #include <string.h>
 #include <math.h>
 
+// Fully unroll the 8-line loops in the audio path so the per line arrays stay
+// in FPU registers instead of on the stack (GCC only unrolls at -O3, and the
+// Teensy default is -O2). Clang understands the same pragma.
+// The small read/write helpers are forced inline for the same reason: at -O2
+// GCC leaves the 6-point tank read as a function call, eight times per sample.
+#if defined(__GNUC__)
+#define VRV_UNROLL _Pragma("GCC unroll 8")
+#define VRV_INLINE inline __attribute__((always_inline))
+#else
+#define VRV_UNROLL
+#define VRV_INLINE inline
+#endif
+
 namespace vrv {
 
 static inline uint32_t nextPow2(uint32_t v) {
@@ -57,7 +70,7 @@ static inline float clampf(float x, float lo, float hi) {
 // that loss is what limits the high frequency decay time: at a half sample
 // offset linear interpolation loses 1.5 dB per pass at 8 kHz, cubic Hermite
 // 0.3 dB, this one 0.08 dB.
-static inline float interp6(float ym2, float ym1, float y0, float y1, float y2, float y3, float t) {
+static VRV_INLINE float interp6(float ym2, float ym1, float y0, float y1, float y2, float y3, float t) {
   float ym1py1 = ym1 + y1;
   float ym2py2 = (1.0f / 24.0f) * (ym2 + y2);
   float c1 = (1.0f / 20.0f) * ym2 - 0.5f * ym1 - (1.0f / 3.0f) * y0 + y1 - 0.25f * y2 + (1.0f / 30.0f) * y3;
@@ -66,19 +79,6 @@ static inline float interp6(float ym2, float ym1, float y0, float y1, float y2, 
   float c4 = 0.25f * y0 - (1.0f / 6.0f) * ym1py1 + ym2py2;
   float c5 = (1.0f / 120.0f) * (y3 - ym2) + (1.0f / 24.0f) * (ym1 - y2) + (1.0f / 12.0f) * (y1 - y0);
   return ((((c5 * t + c4) * t + c3) * t + c2) * t + c1) * t + y0;
-}
-
-// The six Lagrange weights for a fixed fraction t, for reads whose length
-// does not change within a block (6 multiply-adds per read instead of the
-// polynomial above).
-static inline void lagrangeWeights6(float t, float *w) {
-  const float u[6] = { t + 2.0f, t + 1.0f, t, t - 1.0f, t - 2.0f, t - 3.0f };
-  const float inv[6] = { -1.0f / 120.0f, 1.0f / 24.0f, -1.0f / 12.0f, 1.0f / 12.0f, -1.0f / 24.0f, 1.0f / 120.0f };
-  for (int k = 0; k < 6; k++) {
-    float prod = inv[k];
-    for (int j = 0; j < 6; j++) if (j != k) prod *= u[j];
-    w[k] = prod;
-  }
 }
 
 // Power-of-two circular delay line with integer and fractional reads.
@@ -93,43 +93,31 @@ struct DelayLine {
   }
   void clear() { memset(buf, 0, sizeof(float) * (mask + 1)); }
 
-  inline float readInt(uint32_t d) const { return buf[(w - d) & mask]; }
+  VRV_INLINE float readInt(uint32_t d) const { return buf[(w - d) & mask]; }
 
   // Fractional read, 6-point Lagrange. d must be >= 2 and <= mask - 3.
-  inline float read6(float d) const {
+  VRV_INLINE float read6(float d) const {
     int32_t  i = (int32_t)d;
     float    t = d - (float)i;
     uint32_t p = w - (uint32_t)i;
     return interp6(buf[(p + 2) & mask], buf[(p + 1) & mask], buf[p & mask],
                    buf[(p - 1) & mask], buf[(p - 2) & mask], buf[(p - 3) & mask], t);
   }
-  // Same read with precomputed weights (lagrangeWeights6) at integer delay i.
-  inline float readW(uint32_t i, const float *wt) const {
-    uint32_t p = w - i;
-    return wt[0] * buf[(p + 2) & mask] + wt[1] * buf[(p + 1) & mask] + wt[2] * buf[p & mask]
-         + wt[3] * buf[(p - 1) & mask] + wt[4] * buf[(p - 2) & mask] + wt[5] * buf[(p - 3) & mask];
-  }
 
-  inline void write(float x) { buf[w & mask] = x; w++; }
+  VRV_INLINE void write(float x) { buf[w & mask] = x; w++; }
 };
 
 // Schroeder allpass built on a DelayLine.
 struct Allpass {
   DelayLine d;
-  inline float processInt(float x, uint32_t len, float g) {
+  VRV_INLINE float processInt(float x, uint32_t len, float g) {
     float dl = d.readInt(len);
     float v  = x + g * dl;
     d.write(v);
     return dl - g * v;
   }
-  inline float processFrac(float x, float len, float g) {
+  VRV_INLINE float processFrac(float x, float len, float g) {
     float dl = d.read6(len);
-    float v  = x + g * dl;
-    d.write(v);
-    return dl - g * v;
-  }
-  inline float processW(float x, uint32_t len, const float *wt, float g) {
-    float dl = d.readW(len, wt);
     float v  = x + g * dl;
     d.write(v);
     return dl - g * v;
@@ -145,22 +133,21 @@ struct PreDelay {
   void clear() { memset(buf, 0, sizeof(float) * size); }
   // Call after write(): d = 0 would be the sample just written. The two
   // leading interpolation points must exist, so d must be >= 2 (and <= size - 4).
-  inline float read6(float d) const {
+  VRV_INLINE float read6(float d) const {
     int32_t i = (int32_t)d;
     float   t = d - (float)i;
     int32_t p = (int32_t)w - 1 - i;
     if (p < 0) p += (int32_t)size;
     return interp6(at(p + 2), at(p + 1), buf[p], at(p - 1), at(p - 2), at(p - 3), t);
   }
-  inline float readW(uint32_t i, const float *wt) const {
+  VRV_INLINE float readInt(uint32_t i) const {
     int32_t p = (int32_t)w - 1 - (int32_t)i;
     if (p < 0) p += (int32_t)size;
-    return wt[0] * at(p + 2) + wt[1] * at(p + 1) + wt[2] * buf[p]
-         + wt[3] * at(p - 1) + wt[4] * at(p - 2) + wt[5] * at(p - 3);
+    return buf[p];
   }
-  inline void write(float x) { buf[w] = x; if (++w >= size) w = 0; }
+  VRV_INLINE void write(float x) { buf[w] = x; if (++w >= size) w = 0; }
 private:
-  inline float at(int32_t k) const {
+  VRV_INLINE float at(int32_t k) const {
     if (k < 0) k += (int32_t)size; else if (k >= (int32_t)size) k -= (int32_t)size;
     return buf[k];
   }
@@ -320,32 +307,37 @@ public:
       curApLen_[i] = apTarget;
     }
     float pre = curPre_ + (float)kPreDelayOffset;
-    float preInc = (sPre_ * 0.001f * fs_ - curPre_) * invN;
-    curPre_ = sPre_ * 0.001f * fs_;
+    const float preTarget = rintf(sPre_ * 0.001f * fs_);
+    float preInc = (preTarget - curPre_) * invN;
+    curPre_ = preTarget;
     float mixv = curMix_;
     float mixInc = (sMix_ - curMix_) * invN;
     curMix_ = sMix_;
 
-    // The in-loop allpass and pre-delay lengths only move during a glide.
-    // While a length is static its interpolation weights are computed once
-    // per block; only the LFO modulated tank reads pay the per sample
-    // polynomial.
-    float    apW[kLines][6];
+    // The in-loop allpass and pre-delay targets are whole samples (a half
+    // sample in a 331..1103 sample allpass or in the pre-delay is inaudible),
+    // so they only need interpolation while gliding to a new size or
+    // pre-delay. Once settled they are plain integer reads; only the LFO
+    // modulated tank reads pay the per sample polynomial.
     uint32_t apInt[kLines];
     bool     apStatic[kLines];
     for (int i = 0; i < kLines; i++) {
       apStatic[i] = (apInc[i] == 0.0f);
-      if (apStatic[i]) {
-        apInt[i] = (uint32_t)apLen[i];
-        lagrangeWeights6(apLen[i] - (float)apInt[i], apW[i]);
-      }
+      apInt[i] = (uint32_t)apLen[i];
     }
-    float    preW[6] = {0};
-    uint32_t preInt = 0;
-    const bool preStatic = (preInc == 0.0f);
-    if (preStatic) {
-      preInt = (uint32_t)pre;
-      lagrangeWeights6(pre - (float)preInt, preW);
+    const bool     preStatic = (preInc == 0.0f);
+    const uint32_t preInt    = (uint32_t)pre;
+
+    // Early tap positions are integer reads. In steady state the LFO moves a
+    // line by well under a sample per block, so the positions are fixed per
+    // block (saves a multiply and a float->int conversion per line and
+    // sample). During a size glide a line can move tens of samples per block
+    // and the taps must keep stepping per sample, or they would jump.
+    uint32_t tapPos[kLines];
+    bool     tapPerSample = false;
+    for (int i = 0; i < kLines; i++) {
+      tapPos[i] = (uint32_t)(len[i] * kEarlyFrac[i]);
+      if (fabsf(lenInc[i]) * (float)n * kEarlyFrac[i] >= 1.0f) tapPerSample = true;
     }
 
     const float gIn   = gInDiff_;
@@ -369,8 +361,8 @@ public:
 
       // ---- pre-delay
       preL_.write(l); preR_.write(r);
-      if (preStatic) { l = preL_.readW(preInt, preW); r = preR_.readW(preInt, preW); }
-      else           { l = preL_.read6(pre);           r = preR_.read6(pre);           pre += preInc; }
+      if (preStatic) { l = preL_.readInt(preInt); r = preR_.readInt(preInt); }
+      else           { l = preL_.read6(pre);      r = preR_.read6(pre);      pre += preInc; }
 
       // ---- input diffusion (4 series allpasses per channel)
       l = inApL_[0].processInt(l, inApLenL_[0], gIn);
@@ -384,24 +376,35 @@ public:
 
       // ---- tank: read the 8 modulated delay outputs
       float d[kLines];
+      VRV_UNROLL
       for (int i = 0; i < kLines; i++) {
         d[i] = tank_[i].read6(len[i]);
       }
 
       // ---- outputs: decorrelated sums of the line outputs + early taps
       float wetL = 0.0f, wetR = 0.0f;
+      VRV_UNROLL
       for (int i = 0; i < kLines; i++) {
         wetL += kOutL[i] * d[i];
         wetR += kOutR[i] * d[i];
       }
-      for (int i = 0; i < kLines; i++) {
-        uint32_t tapPos = (uint32_t)(len[i] * kEarlyFrac[i]);
-        float e = tank_[i].readInt(tapPos);
-        if (i & 1) wetR += kEarlyW[i] * e; else wetL += kEarlyW[i] * e;
+      if (tapPerSample) {
+        VRV_UNROLL
+        for (int i = 0; i < kLines; i++) {
+          float e = tank_[i].readInt((uint32_t)(len[i] * kEarlyFrac[i]));
+          if (i & 1) wetR += kEarlyW[i] * e; else wetL += kEarlyW[i] * e;
+        }
+      } else {
+        VRV_UNROLL
+        for (int i = 0; i < kLines; i++) {
+          float e = tank_[i].readInt(tapPos[i]);
+          if (i & 1) wetR += kEarlyW[i] * e; else wetL += kEarlyW[i] * e;
+        }
       }
 
       // ---- per line: shelving decay filters, decay gain, in-loop allpass
       float f[kLines];
+      VRV_UNROLL
       for (int i = 0; i < kLines; i++) {
         float x = d[i];
         lpBass_[i] += aB * (x - lpBass_[i]);
@@ -409,7 +412,7 @@ public:
         lpHigh_[i] += aH * (x - lpHigh_[i]);
         x += shelfHigh_[i] * (x - lpHigh_[i]);         // high shelf: 1 + (GH-1)*HP
         x *= gMid_[i];
-        x = apStatic[i] ? loopAp_[i].processW(x, apInt[i], apW[i], gLoop)
+        x = apStatic[i] ? loopAp_[i].processInt(x, apInt[i], gLoop)
                         : loopAp_[i].processFrac(x, apLen[i], gLoop);
         f[i] = kMixSign[i] * x;
       }
@@ -431,6 +434,7 @@ public:
       tank_[6].write(m6 - il);  tank_[7].write(m7 - ir);
 
       // ---- advance ramps
+      VRV_UNROLL
       for (int i = 0; i < kLines; i++) { len[i] += lenInc[i]; apLen[i] += apInc[i]; }
 
       // ---- dry/wet mix
@@ -470,8 +474,10 @@ private:
   inline float tankLength(int i, float size) const {
     return (float)kTankNom[i] * size * fsScale_;
   }
+  // Rounded to a whole sample: the allpass only has to be interpolated while
+  // the size glides, and a half sample here is inaudible.
   inline float loopApLength(int i, float size) const {
-    return (float)kLoopApNom[i] * size * fsScale_;
+    return rintf((float)kLoopApNom[i] * size * fsScale_);
   }
   static inline float onePoleCoef(float hz, float fs) {
     return 1.0f - expf(-6.283185307f * hz / fs);

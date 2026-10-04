@@ -63,8 +63,10 @@ Why it does not sound like the stock Teensy reverb:
   loop (tank, in-loop allpasses, pre-delay). A fractional read is a low pass,
   and inside a feedback loop that loss shortens the treble decay: at a half
   sample offset linear interpolation loses 1.5 dB per pass at 8 kHz, cubic
-  Hermite 0.3 dB, 6-point Lagrange 0.08 dB. Delays that are not moving use
-  weights computed once per block.
+  Hermite 0.3 dB, 6-point Lagrange 0.08 dB. Only the LFO modulated tank reads
+  are fractional all the time; the in-loop allpasses and the pre-delay settle
+  on whole samples and are only interpolated while gliding to a new size or
+  pre-delay.
 - **Frequency dependent decay** computed per line from the requested RT60
   (Jot's method). Bass and treble get their own RT60 multipliers through
   first-order shelving filters that are provably bounded below unity gain, so
@@ -227,7 +229,7 @@ come out louder, so leave headroom on hot stationary sources or lower
 | Test | Result |
 | --- | --- |
 | RT60 accuracy, size 1.0, 0.5 to 8 s | within 1 % |
-| RT60 at size 0.2 / 0.5 / 1.5, target 2 s | 1.91 / 1.90 / 1.92 s broadband; below 4 kHz within 3 %, 8 kHz 1.7 to 1.9 s, 12 kHz 1.5 to 1.6 s (interpolation loss) |
+| RT60 at size 0.2 / 0.5 / 1.5, target 2 s | 1.93 / 1.91 / 1.93 s broadband; below 4 kHz within 3 %, 8 kHz 1.8 to 1.9 s, 12 kHz 1.6 to 1.75 s (interpolation loss in the modulated tank reads) |
 | RT60 at size 1.0 with modulation 0.4, target 2 s | 1.9 s broadband, 1.9 s @8 kHz, 1.7 s @12 kHz |
 | Band RT60, bassMult 1.5, highMult 0.4 | 2.7 s @100 Hz, 1.9 s @1 kHz, 1.4 s @4 kHz, 1.1 s @12 kHz |
 | Stability: decay 120 s, bassMult 4, size 1.5, full modulation, 60 s | decays monotonically, no NaN |
@@ -244,7 +246,11 @@ cd extras/test && clang++ -O2 -std=c++17 -o test_reverb test_reverb.cpp && ./tes
 
 ## CPU
 
-The core runs at about 80 ns per stereo sample on an Apple laptop core (the
-8 modulated 6-point tank reads are about a third of that). On the 600 MHz
-Cortex-M7 expect roughly 10 to 15 % load. The demo prints
-`reverb.processorUsage()` every 2 s so you can read the real figure.
+Measured 13 % on a Teensy 4.1 at 600 MHz with the Arduino "Faster" (-O2)
+setting before the 2026-09-21 optimisation, which cut the instructions per
+sample by a quarter (2069 to 1556 on the Teensy compiler's output, counted in
+an emulator), so expect around 10 %. "Fastest" (-O3) gains nothing further.
+The demo prints `reverb.processorUsage()` every 2 s so you can read the real
+figure. The 8 modulated 6-point tank reads are the largest single cost; the
+next step if it ever matters would be 4-point reads there, at the price of
+about 10 % shorter decay at 12 kHz with modulation on.
