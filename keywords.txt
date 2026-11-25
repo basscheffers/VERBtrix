@@ -11,6 +11,7 @@ VintageReverbCore	KEYWORD1
 Settings	KEYWORD1
 Type	KEYWORD1
 Preset	KEYWORD1
+Quality	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
@@ -44,6 +45,8 @@ presetSettings	KEYWORD2
 presetType	KEYWORD2
 memoryFloats	KEYWORD2
 ready	KEYWORD2
+quality	KEYWORD2
+qualityName	KEYWORD2
 
 #######################################
 # Constants (LITERAL1)
@@ -59,3 +62,5 @@ ARENA	LITERAL1
 CHORUS_SPACE	LITERAL1
 TYPE_COUNT	LITERAL1
 PRESET_COUNT	LITERAL1
+QUALITY_HIGH	LITERAL1
+QUALITY_LITE	LITERAL1

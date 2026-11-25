@@ -2,7 +2,7 @@
 
 Read this first. It is the handoff between Claude sessions (2026-09-08 build,
 2026-09-09 interpolation fix, 2026-09-17 library packaging, 2026-09-21 CPU
-optimisation). README.md has the
+optimisation, 2026-11-26 lite quality). README.md has the
 user-facing documentation; this file has the context, decisions and open items
 that are not obvious from the code. Sessions may run under different accounts,
 so nothing lives in Claude's memory: everything worth knowing is in here.
@@ -15,12 +15,13 @@ and wanted something on the level of Valhalla VintageVerb. The user's words
 after flashing it: "It sounds amazing."
 
 Hardware: Teensy 4.1 + PJRC Audio Shield (SGTL5000), line in -> reverb -> line
-out / headphones. Uploaded with the Arduino IDE. Teensy core 1.62 is installed
-and `arduino-cli` works for compile checks:
+out / headphones. Uploaded with the Arduino IDE. Teensy core 1.62 is installed.
+`arduino-cli` is NOT on PATH (as of 2026-11-26); it lives inside the IDE bundle:
 
 ```bash
-arduino-cli compile --fqbn teensy:avr:teensy41:usb=serial,speed=600,opt=o2std,keys=en-us --warnings more --library . examples/VERBtrix
-arduino-cli compile --fqbn teensy:avr:teensy41:usb=serial,speed=600,opt=o2std,keys=en-us --warnings more --library . examples/Minimal
+CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
+"$CLI" compile --fqbn teensy:avr:teensy41:usb=serial,speed=600,opt=o2std,keys=en-us --warnings more --library . examples/VERBtrix
+"$CLI" compile --fqbn teensy:avr:teensy41:usb=serial,speed=600,opt=o2std,keys=en-us --warnings more --library . examples/Minimal
 ```
 
 The project is laid out as an Arduino 1.5 library (since 2026-09-17) so it can be installed
@@ -50,7 +51,8 @@ Sketches use `#include <VERBtrix.h>`. Only `src/` is compiled by Arduino.
 - `examples/VERBtrix/VERBtrix.ino` - demo sketch with serial control. Starts on Concert Hall, mix 0.35.
 - `examples/Minimal/Minimal.ino` - shortest possible use.
 - `extras/test/test_reverb.cpp` - offline measurement harness + WAV renderer (writes `extras/test/out/`).
-- `extras/test/param_sweep.cpp` - click test while changing parameters.
+  Runs the whole suite once per quality (`gQuality`); lite WAVs are written as `out/lite_*.wav`.
+- `extras/test/param_sweep.cpp` - click test while changing parameters, both qualities.
 - `extras/test/ir_dump.cpp` - early impulse response statistics per 10 ms.
 - `library.properties`, `keywords.txt` - Arduino library metadata and IDE syntax colouring.
 - `README.md` - documentation, algorithm description, parameter table, preset list, measurements.
@@ -63,12 +65,39 @@ The binaries and `out/*.wav` are git-ignored.
 
 ## Algorithm (VintageReverbCore.h)
 
-Modulated 8-line feedback delay network (Griesinger/Dattorro/Costello lineage):
+Modulated N-line feedback delay network (Griesinger/Dattorro/Costello lineage):
 low cut -> 2-pole high cut -> pre-delay -> 4 series input allpasses per channel
--> 8 delay lines (nominal 1237..2617 samples, primes, scaled by `size`) each with
-a 6-point Lagrange modulated read, bass shelf + high shelf (per-band RT60, Jot),
-decay gain, in-loop allpass (331..1103 samples), then an 8x8 Hadamard matrix.
-Outputs are orthogonal weighted sums of the 8 lines plus 8 early taps.
+-> N delay lines (primes, scaled by `size`) each with an interpolated modulated
+read, bass shelf + high shelf (per-band RT60, Jot), decay gain, in-loop allpass,
+then an NxN Hadamard matrix. Outputs are orthogonal weighted sums of the N lines
+plus N early taps.
+
+Two qualities (`vrv::Quality`, picked in `init()` / the AudioEffect constructor
+because the memory layout depends on it):
+
+| | QUALITY_HIGH | QUALITY_LITE |
+| --- | --- | --- |
+| lines / matrix | 8, 8x8 | 4, 4x4 |
+| tank lengths | 1237..2617 | 1511, 1987, 2503, 3079 |
+| in-loop allpasses | 331..1103 | 331, 541, 877, 1103 |
+| tank read | `interp6` | `interp4` |
+| loop length | 20712 | 11932 |
+| `kDecayTrim` / `kOutScale` | 1.045 / 1.5 | 1.062 / 1.61 |
+| ARM instr/sample (-O2) | 1570 | 749 |
+
+How it is built: one class, with the per sample loop in a private
+`processN<int N>` template that `process()` dispatches to on `quality_`. Every
+table, the matrix size and the interpolation order are compile time constants
+inside it (`if constexpr`), so neither quality pays for the other at run time;
+the state arrays are sized `kMaxLines` and only the first N are used. Both
+instantiations are always compiled in (about 6 KB of extra ITCM even if a
+sketch uses only one) - that is the price of choosing at construction instead
+of templating the user facing class, and it keeps `AudioEffectVintageReverb
+reverb;` working unchanged.
+
+QUALITY_LITE was added 2026-11-26 because the user measured 18 % CPU and wanted
+under 10 %; everything else (parameters, types, all 32 presets, the smoothing,
+freeze, the input stage) is shared and behaves identically.
 
 Decisions that matter:
 - Float everywhere. Delay memory is ~268 KB from the heap (RAM2), or user supplied (EXTMEM ok).
@@ -96,6 +125,10 @@ Decisions that matter:
   sample within the block (size glide): then they step per sample as before. Fixing them per
   block during a glide made the taps jump ~25 samples at block boundaries (param_sweep slew
   ratio 2.7 -> 5.2 at the glide start), which is why the `tapPerSample` path exists.
+- (2026-11-26) `memoryRequired()` / `memoryFloats()` are `constexpr` (via `ceilU`, because
+  `ceilf` is not). The README and the header had always documented
+  `EXTMEM float mem[AudioEffectVintageReverb::memoryFloats()];` for PSRAM, and that had never
+  compiled ("size of array is not an integral constant-expression"); it does now, verified.
 - (2026-09-21) `VRV_UNROLL` (`#pragma GCC unroll 8`) on the per-line loops in `process()` and
   `VRV_INLINE` (`always_inline`) on the delay line helpers. Found by disassembling the Teensy
   compiler's output: at -O2 GCC left `DelayLine::read6` as a real function call, 8 per sample,
@@ -114,13 +147,27 @@ Freeze drifts about -1 dB over 30 s (was -2). Echo density reaches Gaussian by ~
 ~80 ms (hall). L/R tail correlation -0.02. No clicks on any parameter change (param_sweep).
 Compiles clean for Teensy 4.1 (2026-09-09).
 
-CPU: the user measured 13 % on the Teensy 4.1 (600 MHz, "Faster" -O2) with the 2026-09-18
-code. The 2026-09-21 changes cut the dynamic instruction count per stereo sample from 2069 to
-1556 (-25 %) in steady state and 2408 -> 2107 during a size glide, measured by running the
-Teensy toolchain's own output in an emulator (see "Measuring CPU without a board" below), so
-expect ~10 %. NOT yet measured on the board, and not listened to. -O3 ("Fastest") gains
-nothing further now (1526 vs 1556). Nothing has been evaluated by ear except the user's overall
-verdict. Preset values are acoustic judgment, expected to need tuning by ear.
+QUALITY_LITE (2026-11-26): RT60 within 1 % at size 1.0 (0.5..8 s) after calibrating
+`kDecayTrimLite`; wet level -0.6 dB; band decay tracks the multipliers; stable in the 120 s /
+bassMult 4 / size 1.5 worst case; no NaN anywhere. Weaker than QUALITY_HIGH in exactly two
+measurable ways: echo density at size 1.0 reaches Gaussian at ~200 ms instead of ~100 ms
+(0.58 @60 ms, 0.66 @80 ms against 0.75 / 0.91) - small sizes are nearly as good (0.95 @60 ms) -
+and the treble tail is shorter (12 kHz 1.53 s vs 1.68 s, mod 0.4, size 1.0, 2 s target), which
+is the 4-point read. Freeze drifts -1.7 dB over 30 s (high: -1.0). param_sweep is clean except
+for a 5.31 slew ratio in the window where freeze engages (high: 2.85 there, worst 3.71
+elsewhere; the harness calls >> 6 a click, Gaussian noise is 4-5), so there may be a faint tick
+on freeze-on at QUALITY_LITE. Deliberately left alone: smoothing the freeze transition would
+change QUALITY_HIGH behaviour too, which was not asked for.
+
+CPU history: the user's "13 %" (quoted on 2026-09-21) was from a build flashed BEFORE the
+6-point interpolator, i.e. the 2026-09-08 code. The first measurement of the 6-point code,
+with the 2026-09-21 tier-1 work already in it, was **18 %** (2026-11-26). That is consistent:
+the interpolator raised host cost 49 -> 80 ns/sample. So nothing regressed; 6-point
+interpolation is simply what it costs. The emulator counts the tier-1 work saved (2069 ->
+1556 instr/sample) are still believed, they were just measured against the wrong baseline
+expectation. QUALITY_LITE is 749 vs 1570 instr/sample, so expect ~9 % on the board.
+NOT yet measured on the board and NOT listened to. -O3 ("Fastest") gains nothing (1526 vs
+1556 at QUALITY_HIGH). Preset values are acoustic judgment, expected to need tuning by ear.
 
 ## Measuring CPU without a board
 
@@ -140,30 +187,56 @@ Instruction count is not cycles (dual issue, FPU latency, cache) but tracks the 
 far better than host timing. Also useful: `arm-none-eabi-objdump -dr` on the object to see
 which helpers are actually inlined (`R_ARM_THM_CALL` relocations inside `process`).
 
+Host ns/sample from the harness is still printed and still misleading: QUALITY_LITE measures
+27 ns against 55 ns (0.49x) where the M7 count says 0.48x - that one happens to agree, but the
+tier-1 change had them disagreeing badly (74.6 -> 57.5 ns for a 25 % instruction cut).
+
 ## Gotchas learned
+
+- `HIGH` is an Arduino macro (`core_pins.h`), so the quality constants cannot be called
+  `HIGH`/`LITE`. They are `AudioEffectVintageReverb::QUALITY_HIGH` / `QUALITY_LITE` (aliases of
+  `vrv::QUALITY_*`). The error this produces is a confusing
+  "expected unqualified-id before numeric constant" pointing INTO core_pins.h.
+- Use `if constexpr`, not plain `if`, to pick the 8-line Hadamard inside `processN<N>`: with a
+  plain `if` the N=4 instantiation still compiles the branch that indexes `f[4]..f[7]` on
+  4-element arrays. The editor's clang warns "constexpr if is a C++17 extension" because it
+  does not pick up the project standard; gnu++17 (Teensy) and -std=c++17 (harness) are fine.
 
 - The first upload looked dead: the Arduino IDE serial monitor sends no line ending by default
   and the startup prints came before the monitor attached. The sketch now waits up to 4 s for
   `Serial`, prints `CrashReport`, and executes commands on newline OR 100 ms after the last char.
 - `__SSAT` is not available without CMSIS in a sketch; a plain clamp is used instead.
+- `reverb.reset()` used to hard fault when the heap allocation had failed (`resetState()`
+  memsets `DelayLine::buf`, which is still null then). Guarded with `if (!core_.ready())`
+  on 2026-11-26.
 - The editor's clang shows "Arduino.h not found" errors in the Teensy files; ignore, arduino-cli
   is the real check.
 - Arduino only compiles `src/` of a library, so `extras/test/` is safe from the build.
 
 ## Where we left off / possible next steps
 
-Last completed (2026-09-21): the "tier 1" CPU work in `VintageReverbCore.h` (integer allpass
-and pre-delay targets, per-block early taps, unroll + always_inline; see Decisions), README
-and this file updated. Harness: RT60 at size 1.0 unchanged, treble RT60 at other sizes longer,
-param_sweep clean (worst slew ratio 3.7, same as before), both examples compile for Teensy 4.1
-with `--warnings more` and no warnings. The user had already flashed and listened to the
-2026-09-18 library version ("13 % CPU"). The 2026-09-21 change is NOT flashed or listened to.
-On hardware, check:
-1. `reverb.processorUsage()` (expect ~10 %, was 13 %).
-2. That it still sounds the same. What could differ by ear: nothing intended; the allpass
-   lengths are now within 0.5 sample of before and the treble tail at small sizes is slightly
-   longer (closer to the target). During a size glide the allpasses step by whole samples
-   between blocks instead of ramping fractionally, which the click test does not see.
+Last completed (2026-11-26): QUALITY_LITE, the 4-line/4x4/4-point variant selected at
+construction (see Algorithm). Also: `memoryFloats()` made constexpr so the documented EXTMEM
+pattern compiles, the harness and param_sweep run both qualities, `VERBTRIX_LITE` switch at
+the top of `examples/VERBtrix/VERBtrix.ino` (prints the quality and `processorUsage()` so the
+two can be compared on the board), README "Quality" section, keywords.txt.
+Verified: the QUALITY_HIGH path is bit-identical to commit ef2ae5d (every harness number
+matches), both examples compile in both configurations with `--warnings more` and no warnings,
+and the EXTMEM/PSRAM pattern compiles.
+NOT flashed and NOT listened to. On hardware:
+1. `reverb.processorUsage()` at QUALITY_LITE (expect ~9 %, high reads 18 %).
+2. Whether QUALITY_LITE is acceptable by ear, in particular a large hall or cathedral, where
+   the density deficit is concentrated (compare `extras/test/out/hall_wet.wav` against
+   `out/lite_hall_wet.wav`, and the same for cathedral), and whether freeze-on ticks.
+
+Experiments that did NOT work, so nobody repeats them (2026-11-26):
+- Raising the in-loop allpass coefficient for lite (0.55 -> 0.65/0.75/0.85 x diffusion) does
+  nothing for echo density: 60 ms stayed at 0.57-0.58. The deficit is the number of echo
+  generators, not the strength of the diffusion.
+- A SECOND in-loop allpass per lite line (463, 727, 1039, 1279) also did nothing for density
+  (0.58 / 0.62 / 0.80 at 60/80/100 ms, i.e. unchanged), while costing CPU, 28 KB and a RT60
+  recalibration. Reverted. It did improve L/R correlation (-0.048 -> -0.018), if that ever
+  matters.
 
 Before that (2026-09-09, first half): renamed the sketch "presets" to `Type` (8 families) and
 added a `Preset` enum with 32 named presets, `settings()`/`apply()` for user presets.
@@ -173,9 +246,14 @@ Ideas the user has not decided on yet:
 - An early-reflection stage, or a VintageVerb style "color" mode (1970s band-limited/noisy).
 - Encoder/display UI for scrolling presets (the enum + `presetName()` are ready for it).
 - Reduce memory (int16 pre-delay, smaller max pre-delay) if RAM2 gets tight in a bigger project.
-- If CPU turns out tight ("tier 2"): the 8 tank reads could go to 4-point (cubic/Lagrange) at
-  the cost of ~10 % shorter decay at 12 kHz with modulation on (roughly halves the largest
-  remaining item), or modulate only 4 of the 8 lines (the other 4 become integer reads; needs a
-  listening test). A guard region on the delay buffers (one masked base index + 5 contiguous
-  loads per 6-point read) is a smaller, free one. The allpasses should stay 6-point during
-  glides.
+- If CPU is still tight at QUALITY_LITE: a guard region on the delay buffers (one masked base
+  index + 5 contiguous loads per interpolated read instead of 6 masked ones) is free in
+  quality; dropping the input diffusers from 4 to 3 per channel saves ~16 instr/sample at a
+  real density cost. Modulating only half the lines is the other lever (the rest become
+  integer reads) but needs a listening test.
+- If QUALITY_LITE turns out too thin by ear, the next thing to try is 6 lines rather than
+  tuning the 4-line tables: `processN<6>` with a 6x6 matrix is not a Hadamard (use a
+  Householder or a block-circulant orthogonal matrix instead), which is why 4 was chosen.
+- Preset values were never retuned for QUALITY_LITE. They are shared on purpose, but the
+  diffusion and modulation defaults may want to be a little higher there to cover the density
+  deficit.

@@ -3,6 +3,10 @@
 A high quality stereo reverb for the Teensy 4.x Audio Library, written as a
 drop-in `AudioStream` object with stereo in/out and full parameter control.
 
+It comes in two sizes, chosen when you construct the object: the full 8-line
+network, and a 4-line **lite** version that runs in about 40 % of the CPU with
+the same parameters and presets. See [Quality](#quality).
+
 ## Installation
 
 VERBtrix is a standard Arduino library.
@@ -40,15 +44,17 @@ software descendants:
 
 ```
 in L/R -> low cut -> high cut (2-pole) -> pre-delay -> 4 series allpass diffusers
-       -> 8 line tank, per line:
-            modulated delay (6-point Lagrange interpolation)
+       -> N line tank, per line:
+            modulated delay (Lagrange interpolation)
             -> bass shelf (bass multiplier)
             -> high shelf (high frequency damping)
             -> decay gain from RT60
             -> in-loop allpass diffuser
-       -> 8x8 Hadamard mixing matrix -> back into the delays
-out L/R <- decorrelated weighted sums of the 8 line outputs + 8 early taps
+       -> NxN Hadamard mixing matrix -> back into the delays
+out L/R <- decorrelated weighted sums of the N line outputs + N early taps
 ```
+
+N is 8 at `QUALITY_HIGH` and 4 at `QUALITY_LITE`.
 
 Why it does not sound like the stock Teensy reverb:
 
@@ -77,6 +83,41 @@ Why it does not sound like the stock Teensy reverb:
   50 ms at room size and 80 ms at hall size.
 - **Float processing** throughout. No fixed-point noise floor building up in
   the feedback loop.
+
+## Quality
+
+The network size is fixed when the object is constructed, because the amount
+and layout of the delay memory depends on it:
+
+```cpp
+AudioEffectVintageReverb reverb;                                        // high (default)
+AudioEffectVintageReverb reverb(AudioEffectVintageReverb::QUALITY_LITE);  // lite
+```
+
+|  | `QUALITY_HIGH` (default) | `QUALITY_LITE` |
+| --- | --- | --- |
+| Delay lines / matrix | 8, 8x8 Hadamard | 4, 4x4 Hadamard |
+| Tank interpolation | 6-point Lagrange | 4-point Lagrange |
+| Input diffusers, pre-delay, filters, modulation | the same | the same |
+| Teensy 4.1 CPU at 600 MHz | about 18 % | about 9 % |
+| Delay memory | 268 KB | 204 KB |
+| Loop length (modal density) | 20712 samples | 11932 samples |
+| Echo density reaches Gaussian | ~100 ms (hall) | ~200 ms (hall) |
+
+Everything else is identical: every parameter, type and preset behaves the
+same, RT60 is accurate to within 1 % either way, and both are calibrated to
+the same wet level. What you give up at `QUALITY_LITE` is density. Half the
+delay lines means half the modes and less than half the echoes per second, so
+a big hall takes about twice as long to smooth out into a wash and the tail is
+slightly grainier; small and medium spaces, where the lines are short and the
+echoes come fast anyway, are much closer. The 4-point reads also cost a little
+treble decay (12 kHz RT60 1.53 s against 1.68 s at QUALITY_HIGH, target 2 s,
+size 1.0, modulation 0.4), and freeze drifts 1.7 dB down over 30 s instead of
+1 dB.
+
+Use `QUALITY_LITE` when the reverb shares the Teensy with other audio objects,
+or when you want two reverbs at once. Use the default when the reverb is the
+main thing the chip does.
 
 ## Using it
 
@@ -205,13 +246,23 @@ smoothed inside the effect (40 ms, size 250 ms) so there is no zipper noise.
 
 ### Memory
 
-The effect needs about 268 KB of delay memory (float). The default
-constructor takes it from the heap, which on Teensy 4.x lives in RAM2. To
-keep RAM2 free on a Teensy 4.1 with PSRAM fitted:
+The effect needs about 268 KB of delay memory (float), or 204 KB at
+`QUALITY_LITE`. The default constructor takes it from the heap, which on
+Teensy 4.x lives in RAM2. To keep RAM2 free on a Teensy 4.1 with PSRAM
+fitted:
 
 ```cpp
 EXTMEM float reverbMem[AudioEffectVintageReverb::memoryFloats()];
 AudioEffectVintageReverb reverb(reverbMem, AudioEffectVintageReverb::memoryFloats());
+```
+
+`memoryFloats()` and the constructor both take the quality, so for the lite
+version pass it to both:
+
+```cpp
+static constexpr auto kQ = AudioEffectVintageReverb::QUALITY_LITE;
+EXTMEM float reverbMem[AudioEffectVintageReverb::memoryFloats(kQ)];
+AudioEffectVintageReverb reverb(reverbMem, AudioEffectVintageReverb::memoryFloats(kQ), kQ);
 ```
 
 `reverb.ready()` returns false if allocation failed; the effect then passes
@@ -228,15 +279,18 @@ come out louder, so leave headroom on hot stationary sources or lower
 
 | Test | Result |
 | --- | --- |
-| RT60 accuracy, size 1.0, 0.5 to 8 s | within 1 % |
+| RT60 accuracy, size 1.0, 0.5 to 8 s | within 1 % (lite: within 1 %) |
 | RT60 at size 0.2 / 0.5 / 1.5, target 2 s | 1.93 / 1.91 / 1.93 s broadband; below 4 kHz within 3 %, 8 kHz 1.8 to 1.9 s, 12 kHz 1.6 to 1.75 s (interpolation loss in the modulated tank reads) |
 | RT60 at size 1.0 with modulation 0.4, target 2 s | 1.9 s broadband, 1.9 s @8 kHz, 1.7 s @12 kHz |
 | Band RT60, bassMult 1.5, highMult 0.4 | 2.7 s @100 Hz, 1.9 s @1 kHz, 1.4 s @4 kHz, 1.1 s @12 kHz |
 | Stability: decay 120 s, bassMult 4, size 1.5, full modulation, 60 s | decays monotonically, no NaN |
 | Freeze, 30 s | level drifts 1 dB down (interpolation loss), no growth |
-| Echo density (1.0 = Gaussian) | room: 0.96 @60 ms, hall: 0.93 @80 ms |
-| L/R tail correlation | -0.02 |
-| Parameter changes while running | no clicks |
+| Echo density (1.0 = Gaussian) | room: 0.96 @60 ms, hall: 0.93 @80 ms (lite: 0.95 @60 ms room, 0.66 @80 ms hall) |
+| L/R tail correlation | -0.02 (lite: -0.05) |
+| Parameter changes while running | no clicks (lite: a measurable but sub-threshold step when freeze engages) |
+
+The harness runs the whole suite twice, once per quality, and writes the lite
+listening files as `out/lite_*.wav` so you can A/B them against the others.
 
 Build and run the harness on a Mac or Linux box:
 
@@ -246,11 +300,14 @@ cd extras/test && clang++ -O2 -std=c++17 -o test_reverb test_reverb.cpp && ./tes
 
 ## CPU
 
-Measured 13 % on a Teensy 4.1 at 600 MHz with the Arduino "Faster" (-O2)
-setting before the 2026-09-21 optimisation, which cut the instructions per
-sample by a quarter (2069 to 1556 on the Teensy compiler's output, counted in
-an emulator), so expect around 10 %. "Fastest" (-O3) gains nothing further.
-The demo prints `reverb.processorUsage()` every 2 s so you can read the real
-figure. The 8 modulated 6-point tank reads are the largest single cost; the
-next step if it ever matters would be 4-point reads there, at the price of
-about 10 % shorter decay at 12 kHz with modulation on.
+Measured on a Teensy 4.1 at 600 MHz with the Arduino "Faster" (-O2) setting:
+**about 18 %** at `QUALITY_HIGH`. `QUALITY_LITE` executes 749 ARM instructions
+per stereo sample against 1570, so expect **about 9 %**. (Those counts come
+from running the Teensy compiler's own output in an emulator; see CLAUDE.md.)
+"Fastest" (-O3) gains nothing further.
+
+The N modulated interpolated tank reads are the largest single cost in both,
+which is why the lite version drops to 4-point reads as well as 4 lines. The
+demo sketch prints `reverb.processorUsage()` and which quality it is running,
+so you can flash both and compare: set `VERBTRIX_LITE` to 1 at the top of
+`examples/VERBtrix/VERBtrix.ino`.

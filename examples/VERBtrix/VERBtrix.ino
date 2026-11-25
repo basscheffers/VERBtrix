@@ -21,8 +21,18 @@
 #include <SerialFlash.h>
 #include <VERBtrix.h>
 
+// Set this to 1 to build the lighter 4-line version: about 40 % of the CPU
+// and 204 KB instead of 268 KB, at the cost of some density in the tail.
+// Every command below works the same either way. The sketch prints which one
+// is running and its CPU load, so you can flash both and compare.
+#define VERBTRIX_LITE 0
+
 AudioInputI2S            i2sIn;
-AudioEffectVintageReverb reverb;   // ~268 KB of delay memory from the heap (RAM2)
+#if VERBTRIX_LITE
+AudioEffectVintageReverb reverb(AudioEffectVintageReverb::QUALITY_LITE);   // ~204 KB from the heap (RAM2)
+#else
+AudioEffectVintageReverb reverb;                                          // ~268 KB from the heap (RAM2)
+#endif
 AudioOutputI2S           i2sOut;
 AudioControlSGTL5000     sgtl5000;
 
@@ -45,6 +55,7 @@ void listPresets() {
 }
 
 void printSettings() {
+  Serial.printf("quality: %s\n", AudioEffectVintageReverb::qualityName(reverb.quality()));
   Serial.printf("type: %s   preset: %s\n", AudioEffectVintageReverb::typeName(reverb.type()),
                 AudioEffectVintageReverb::presetName(reverb.preset()));
   Serial.printf("decay %.2f s  size %.2f  mix %.2f  predelay %.0f ms  diffusion %.2f\n",
@@ -69,9 +80,10 @@ void setup() {
     Serial.print(CrashReport);
     Serial.println("------------------------------");
   }
+  Serial.printf("reverb quality: %s\n", AudioEffectVintageReverb::qualityName(reverb.quality()));
   Serial.printf("reverb memory: %u floats (%u KB), ready=%d\n",
-                (unsigned)AudioEffectVintageReverb::memoryFloats(),
-                (unsigned)(AudioEffectVintageReverb::memoryFloats() * 4 / 1024), reverb.ready());
+                (unsigned)AudioEffectVintageReverb::memoryFloats(reverb.quality()),
+                (unsigned)(AudioEffectVintageReverb::memoryFloats(reverb.quality()) * 4 / 1024), reverb.ready());
 
   AudioMemory(20);
 

@@ -12,16 +12,21 @@
 #include <sys/stat.h>
 
 using vrv::VintageReverbCore;
+using vrv::Quality;
 
 static const float FS = 44100.0f;
 static const int BLOCK = 128;
+
+// The whole suite runs once per quality (see main).
+static Quality     gQuality = vrv::QUALITY_HIGH;
+static const char *gTag     = "";     // prefix for the WAV file names
 
 struct Rev {
   std::vector<float> mem;
   VintageReverbCore core;
   Rev() {
-    mem.resize(VintageReverbCore::memoryRequired(FS, 250.0f));
-    if (!core.init(mem.data(), mem.size(), FS, 250.0f)) { fprintf(stderr, "init failed\n"); exit(1); }
+    mem.resize(VintageReverbCore::memoryRequired(FS, 250.0f, gQuality));
+    if (!core.init(mem.data(), mem.size(), FS, 250.0f, gQuality)) { fprintf(stderr, "init failed\n"); exit(1); }
   }
   void run(const std::vector<float>& inL, const std::vector<float>& inR,
            std::vector<float>& outL, std::vector<float>& outR) {
@@ -128,10 +133,10 @@ static void addPluck(std::vector<float>& L, std::vector<float>& R, size_t at, fl
 
 struct Preset { const char* name; float size, decay, pre, diff, modRate, modDepth, bassMult, highMult, highXover, highCut; };
 
-int main() {
+static void runSuite() {
   mkdir("out", 0755);
-  printf("memory required: %zu floats = %.1f KB\n\n",
-         VintageReverbCore::memoryRequired(FS, 250.0f), VintageReverbCore::memoryRequired(FS, 250.0f) * 4 / 1024.0);
+  size_t memFloats = VintageReverbCore::memoryRequired(FS, 250.0f, gQuality);
+  printf("memory required: %zu floats = %.1f KB\n\n", memFloats, memFloats * 4 / 1024.0);
 
   // ---------------------------------------------------------- 1. RT60 accuracy
   printf("== RT60 calibration (mod off, size 1.0, bassMult 1, highMult 1) ==\n");
@@ -140,7 +145,7 @@ int main() {
     r.core.setModDepth(0); r.core.setBassMult(1); r.core.setHighMult(1); r.core.setHighCut(20000); r.core.setLowCut(10);
     r.core.setDecaySeconds(t60); r.core.setSize(1.0f);
     // re-init to snap smoothing
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * (t60 * 1.5f + 1.0f));
     std::vector<float> iL(n, 0), iR(n, 0), oL, oR;
     iL[0] = 1.0f; iR[0] = 1.0f;
@@ -160,7 +165,7 @@ int main() {
       Rev r;
       r.core.setModDepth(md); r.core.setBassMult(1); r.core.setHighMult(1); r.core.setHighCut(20000); r.core.setLowCut(10);
       r.core.setDecaySeconds(2.0f); r.core.setSize(sz);
-      r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+      r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
       size_t n = (size_t)(FS * 5);
       std::vector<float> iL(n, 0), iR(n, 0), oL, oR; iL[0] = 1; iR[0] = 1;
       r.run(iL, iR, oL, oR);
@@ -176,7 +181,7 @@ int main() {
     Rev r;
     r.core.setModDepth(0); r.core.setBassMult(1.5f); r.core.setBassXover(300); r.core.setHighMult(0.4f); r.core.setHighXover(4000);
     r.core.setHighCut(20000); r.core.setLowCut(10); r.core.setDecaySeconds(2.0f);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 5);
     std::vector<float> iL(n, 0), iR(n, 0), oL, oR; iL[0] = 1; iR[0] = 1;
     r.run(iL, iR, oL, oR);
@@ -190,7 +195,7 @@ int main() {
   {
     Rev r;
     r.core.setDecaySeconds(120); r.core.setBassMult(4); r.core.setHighMult(1); r.core.setSize(1.5f); r.core.setModDepth(1); r.core.setModRate(5);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 60);
     std::vector<float> iL(n, 0), iR(n, 0), oL, oR;
     addNoiseBurst(iL, iR, 0, 50, 1.0f, 1);
@@ -203,7 +208,7 @@ int main() {
   {
     Rev r;
     r.core.setDecaySeconds(2); r.core.setSize(1.0f);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 30);
     std::vector<float> iL(n, 0), iR(n, 0), oL(n), oR(n);
     addNoiseBurst(iL, iR, 0, 50, 1.0f, 2);
@@ -220,7 +225,7 @@ int main() {
   for (float sz : {0.35f, 1.0f}) {
     Rev r;
     r.core.setDecaySeconds(3); r.core.setSize(sz); r.core.setPreDelayMs(0);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 2);
     std::vector<float> iL(n, 0), iR(n, 0), oL, oR; iL[0] = 1; iR[0] = 1;
     r.run(iL, iR, oL, oR);
@@ -236,7 +241,7 @@ int main() {
   {
     Rev r;
     r.core.setDecaySeconds(3); r.core.setSize(1.0f);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 3);
     std::vector<float> iL(n, 0), iR(n, 0), oL, oR; iL[0] = 1; iR[0] = 1;
     r.run(iL, iR, oL, oR);
@@ -251,7 +256,7 @@ int main() {
   {
     Rev r;
     r.core.setDecaySeconds(2); r.core.setSize(1.0f);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     size_t n = (size_t)(FS * 8);
     std::vector<float> iL(n), iR(n), oL, oR;
     uint32_t s = 7;
@@ -289,7 +294,7 @@ int main() {
     r.core.setSize(p.size); r.core.setDecaySeconds(p.decay); r.core.setPreDelayMs(p.pre); r.core.setDiffusion(p.diff);
     r.core.setModRate(p.modRate); r.core.setModDepth(p.modDepth); r.core.setBassMult(p.bassMult); r.core.setHighMult(p.highMult);
     r.core.setHighXover(p.highXover); r.core.setHighCut(p.highCut);
-    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f);
+    r.core.init(r.mem.data(), r.mem.size(), FS, 250.0f, gQuality);
     r.core.setSize(p.size); r.core.setDecaySeconds(p.decay); r.core.setPreDelayMs(p.pre); r.core.setDiffusion(p.diff);
     r.core.setModRate(p.modRate); r.core.setModDepth(p.modDepth); r.core.setBassMult(p.bassMult); r.core.setHighMult(p.highMult);
     r.core.setHighXover(p.highXover); r.core.setHighCut(p.highCut);
@@ -307,18 +312,18 @@ int main() {
     addPluck(iL, iR, (size_t)(4.8f * FS), 523.3f, 1500, 0.25f, 0.5f);
     r.core.setMix(1.0f);
     r.run(iL, iR, oL, oR);
-    writeWav(std::string("out/") + p.name + "_wet.wav", oL, oR);
+    writeWav(std::string("out/") + gTag + p.name + "_wet.wav", oL, oR);
     // 35% mix version
     r.core.resetState();
     r.core.setMix(0.35f);
     r.run(iL, iR, oL, oR);
-    writeWav(std::string("out/") + p.name + "_mix35.wav", oL, oR);
+    writeWav(std::string("out/") + gTag + p.name + "_mix35.wav", oL, oR);
     // impulse response
     r.core.resetState();
     r.core.setMix(1.0f);
     std::vector<float> imL(n, 0), imR(n, 0); imL[100] = 0.5f; imR[100] = 0.5f;
     r.run(imL, imR, oL, oR);
-    writeWav(std::string("out/") + p.name + "_ir.wav", oL, oR);
+    writeWav(std::string("out/") + gTag + p.name + "_ir.wav", oL, oR);
     printf("  %s (size %.2f, decay %.1f s): wet peak %.3f, nan:%d\n", p.name, p.size, p.decay, peak(oL), hasNaN(oL));
   }
   {
@@ -336,5 +341,14 @@ int main() {
     writeWav("out/dry.wav", iL, iR);
   }
   printf("done\n");
+}
+
+int main() {
+  printf("################ QUALITY_HIGH (8 lines, 6-point reads) ################\n");
+  gQuality = vrv::QUALITY_HIGH; gTag = "";
+  runSuite();
+  printf("\n\n################ QUALITY_LITE (4 lines, 4-point reads) ################\n");
+  gQuality = vrv::QUALITY_LITE; gTag = "lite_";
+  runSuite();
   return 0;
 }

@@ -2,17 +2,29 @@
  *
  * High quality stereo reverb for the Teensy Audio Library (Teensy 4.x).
  *
- * A modulated 8-line feedback delay network with input diffusion, in-loop
- * allpass diffusers, frequency dependent decay (bass multiplier, high
- * damping), pre-delay, size, freeze and dry/wet mix. All DSP runs in floating
- * point on the Cortex-M7 FPU. See VintageReverbCore.h for the algorithm.
+ * A modulated feedback delay network with input diffusion, in-loop allpass
+ * diffusers, frequency dependent decay (bass multiplier, high damping),
+ * pre-delay, size, freeze and dry/wet mix. All DSP runs in floating point on
+ * the Cortex-M7 FPU. See VintageReverbCore.h for the algorithm.
  *
  * Inputs : 0 = left, 1 = right   (feed the same source to both for mono)
  * Outputs: 0 = left, 1 = right
  *
- * Memory: about 268 KB of delay memory (float). By default it is taken from
- * the heap (RAM2 / OCRAM on Teensy 4.x). To keep RAM2 free, allocate the
- * buffer yourself, for instance in PSRAM on a Teensy 4.1:
+ * Two qualities, chosen when the object is constructed:
+ *
+ *     AudioEffectVintageReverb reverb;          // HIGH: 8 lines (the default)
+ *     AudioEffectVintageReverb reverb(AudioEffectVintageReverb::QUALITY_LITE);
+ *
+ * LITE runs 4 delay lines, a 4x4 matrix and 4-point interpolated delay reads
+ * instead of 8 / 8x8 / 6-point. It takes about 40 % of the CPU and 204 KB
+ * instead of 268 KB, and accepts about half the modal density (a slightly
+ * grainier, slower building tail, most audible on large sizes and long
+ * decays) and a slightly shorter treble tail. Every parameter, type and
+ * preset works exactly the same on both.
+ *
+ * Memory: about 268 KB of delay memory (float), 204 KB for LITE. By default it
+ * is taken from the heap (RAM2 / OCRAM on Teensy 4.x). To keep RAM2 free,
+ * allocate the buffer yourself, for instance in PSRAM on a Teensy 4.1:
  *
  *     EXTMEM float reverbMem[AudioEffectVintageReverb::memoryFloats()];
  *     AudioEffectVintageReverb reverb(reverbMem, AudioEffectVintageReverb::memoryFloats());
@@ -46,6 +58,13 @@ class AudioEffectVintageReverb : public AudioStream
 {
 public:
   static constexpr float kMaxPreDelayMs = 250.0f;
+
+  // Size of the network. Fixed at construction because the amount and layout
+  // of the delay memory depends on it.
+  // (Not named HIGH/LITE: Arduino.h defines HIGH as a macro.)
+  using Quality = vrv::Quality;
+  static constexpr Quality QUALITY_HIGH = vrv::QUALITY_HIGH;  // 8 lines, 6-point reads
+  static constexpr Quality QUALITY_LITE = vrv::QUALITY_LITE;  // 4 lines, 4-point reads, ~40 % of the CPU
 
   // Reverb type: the family of space the algorithm is set up to imitate.
   // Selecting a type loads its characteristic diffusion, modulation, damping
@@ -84,19 +103,23 @@ public:
   };
 
   // Allocates delay memory from the heap.
-  AudioEffectVintageReverb();
-  // Uses caller supplied memory (at least memoryFloats() floats).
-  AudioEffectVintageReverb(float *memory, size_t memoryFloats);
+  AudioEffectVintageReverb(Quality q = QUALITY_HIGH);
+  // Uses caller supplied memory (at least memoryFloats(q) floats).
+  AudioEffectVintageReverb(float *memory, size_t memoryFloats, Quality q = QUALITY_HIGH);
   virtual ~AudioEffectVintageReverb();
 
   virtual void update(void);
 
-  // Number of floats of delay memory the effect needs.
-  static size_t memoryFloats() {
-    return vrv::VintageReverbCore::memoryRequired(AUDIO_SAMPLE_RATE_EXACT, kMaxPreDelayMs);
+  // Number of floats of delay memory the effect needs at a given quality.
+  // Constant expression, so it can size a static or EXTMEM array.
+  static constexpr size_t memoryFloats(Quality q = QUALITY_HIGH) {
+    return vrv::VintageReverbCore::memoryRequired(AUDIO_SAMPLE_RATE_EXACT, kMaxPreDelayMs, q);
   }
   // False if memory allocation failed; the effect then passes audio through.
   bool ready() const { return core_.ready(); }
+  // The quality this object was constructed with.
+  Quality quality() const { return core_.quality(); }
+  static const char *qualityName(Quality q) { return q == QUALITY_LITE ? "lite (4 lines)" : "high (8 lines)"; }
 
   // ------------------------------------------------------- types & presets
   // Load a type: its characteristic parameters plus a typical size and decay.
@@ -150,8 +173,9 @@ public:
   void wetGain(float g)        { core_.setWetGain(g); }
   // Hard bypass (dry passthrough, delay memory keeps running so no click on return).
   void bypass(bool on)         { bypass_ = on; }
-  // Clear the tail immediately.
-  void reset()                 { __disable_irq(); core_.resetState(); __enable_irq(); }
+  // Clear the tail immediately. (No-op if the delay memory was never
+  // allocated: resetState() would memset a null buffer.)
+  void reset()                 { if (!core_.ready()) return; __disable_irq(); core_.resetState(); __enable_irq(); }
 
   float mix() const       { return core_.mix(); }
   float predelay() const  { return core_.preDelayMs(); }
@@ -170,7 +194,7 @@ public:
   bool  bypass() const    { return bypass_; }
 
 private:
-  void attach(float *memory, size_t memoryFloats);
+  void attach(float *memory, size_t memoryFloats, Quality q);
 
   audio_block_t *inputQueueArray_[2];
   vrv::VintageReverbCore core_;

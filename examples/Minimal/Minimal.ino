@@ -11,6 +11,8 @@
 
 AudioInputI2S            i2sIn;
 AudioEffectVintageReverb reverb;   // ~268 KB of delay memory from the heap (RAM2)
+// For about 40 % of the CPU and 204 KB, with a slightly less dense tail:
+//   AudioEffectVintageReverb reverb(AudioEffectVintageReverb::QUALITY_LITE);
 AudioOutputI2S           i2sOut;
 AudioControlSGTL5000     sgtl5000;
 

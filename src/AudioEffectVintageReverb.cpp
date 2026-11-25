@@ -1,18 +1,18 @@
 #include "AudioEffectVintageReverb.h"
 #include <stdlib.h>
 
-AudioEffectVintageReverb::AudioEffectVintageReverb()
+AudioEffectVintageReverb::AudioEffectVintageReverb(Quality q)
   : AudioStream(2, inputQueueArray_)
 {
-  size_t n = memoryFloats();
+  size_t n = memoryFloats(q);
   ownedMemory_ = (float *)malloc(n * sizeof(float));
-  attach(ownedMemory_, ownedMemory_ ? n : 0);
+  attach(ownedMemory_, ownedMemory_ ? n : 0, q);
 }
 
-AudioEffectVintageReverb::AudioEffectVintageReverb(float *memory, size_t memoryFloats)
+AudioEffectVintageReverb::AudioEffectVintageReverb(float *memory, size_t memoryFloats, Quality q)
   : AudioStream(2, inputQueueArray_)
 {
-  attach(memory, memoryFloats);
+  attach(memory, memoryFloats, q);
 }
 
 AudioEffectVintageReverb::~AudioEffectVintageReverb()
@@ -20,9 +20,9 @@ AudioEffectVintageReverb::~AudioEffectVintageReverb()
   if (ownedMemory_) free(ownedMemory_);
 }
 
-void AudioEffectVintageReverb::attach(float *memory, size_t memoryFloats)
+void AudioEffectVintageReverb::attach(float *memory, size_t memoryFloats, Quality q)
 {
-  core_.init(memory, memoryFloats, AUDIO_SAMPLE_RATE_EXACT, kMaxPreDelayMs);
+  core_.init(memory, memoryFloats, AUDIO_SAMPLE_RATE_EXACT, kMaxPreDelayMs, q);
   apply(typeDefaults(HALL));
 }
 

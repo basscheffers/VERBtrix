@@ -22,11 +22,12 @@ static void writeWav(const char* path, const std::vector<float>& L, const std::v
   fclose(f);
 }
 
-int main() {
-  std::vector<float> mem(VintageReverbCore::memoryRequired(FS));
+static void sweep(vrv::Quality q, const char *name) {
+  printf("\n==== %s ====\n", name);
+  std::vector<float> mem(VintageReverbCore::memoryRequired(FS, 250.0f, q));
   VintageReverbCore c;
   c.setDecaySeconds(3); c.setSize(0.5f); c.setMix(1.0f);
-  c.init(mem.data(), mem.size(), FS);
+  c.init(mem.data(), mem.size(), FS, 250.0f, q);
 
   size_t n = ((size_t)(FS * 12) / 128) * 128;
   std::vector<float> iL(n), iR(n), oL(n), oR(n);
@@ -60,6 +61,11 @@ int main() {
   printf("worst maxSlew/rmsSlew = %.2f at t=%.1fs   (a sine has ~1.4, Gaussian noise ~4-5)\n", worst, worstT);
   bool nan = false; for (float v : oL) if (!std::isfinite(v)) nan = true;
   printf("nan: %d\n", nan);
-  writeWav("out/param_sweep.wav", oL, oR);
+  writeWav(q == vrv::QUALITY_LITE ? "out/param_sweep_lite.wav" : "out/param_sweep.wav", oL, oR);
+}
+
+int main() {
+  sweep(vrv::QUALITY_HIGH, "QUALITY_HIGH (8 lines)");
+  sweep(vrv::QUALITY_LITE, "QUALITY_LITE (4 lines)");
   return 0;
 }
